@@ -4,6 +4,10 @@
 #include <cstdio>
 #include <cstring>
 
+#include <esp_wifi.h>
+
+#include "driver/temperature_sensor.h"
+
 #define RGB_BUILTIN 48
 #define BUTTON_BOOT 0
 
@@ -16,6 +20,11 @@ WiFiUDP Udp;
 
 uint8_t Buffer[1400];
 
+unsigned long LastNotAckedCheck = 0;
+
+temperature_sensor_handle_t TempSensor = NULL;
+temperature_sensor_config_t TempSensorConfig = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 60);
+
 enum
 {
 	C_PING,
@@ -25,7 +34,9 @@ enum
 	C_SAY,
 	S_CHAT,
 	C_DISCONNECT,
-	S_DISCONNECT
+	S_DISCONNECT,
+	C_TEMP,
+	S_TEMP
 };
 
 enum
@@ -51,6 +62,7 @@ ClientInfo Clients[MAX_CLIENTS];
 
 void ConnectWiFi()
 {
+	WiFi.setSleep(false);
 	WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
 	Serial.print("Подключение к WiFi");
@@ -221,28 +233,6 @@ int FindClientByName(const char *Name)
 	return -1;
 }
 
-/*int GetSlot(IPAddress Addr, uint16_t Port)
-{
-	for(int i = 0; i < MAX_CLIENTS; i++)
-	{
-		if(Clients[i].Free || Addr[0] != Clients[i].Addr[0] || Addr[1] != Clients[i].Addr[1] || Addr[2] != Clients[i].Addr[2] || Addr[3] != Clients[i].Addr[3] ||
-			Port != Clients[i].Port)
-			continue;
-		return i;
-	}
-	return -1;
-}
-
-int GetLatestSlot()
-{
-	for(int i = MAX_CLIENTS; i >= 0; i--)
-	{
-		if(!Clients[i].Free)
-			return i;
-	}
-	return -1;
-}*/
-
 void ClearSlot(int Slot)
 {
 	Clients[Slot].Free = true;
@@ -347,6 +337,22 @@ void ProcessPacket(IPAddress Addr, uint16_t Port)
 					SendPacket(Packer, Clients[i].Addr, Clients[i].Port);
 			}
 		}
+		if(Msg == C_TEMP)
+		{
+			int Slot = FindClientByAddress(Addr, Port);
+			if(Slot == -1)
+			{
+				return;
+			}
+
+			float TempSensorValue;
+			temperature_sensor_get_celsius(TempSensor, &TempSensorValue);
+
+			MsgPacker Packer(S_TEMP);
+			Packer.AddInt(static_cast<int>(TempSensorValue * 100)); // quantize
+
+			SendPacket(Packer, Addr, Port);
+		}
 		if(Msg == C_DISCONNECT)
 		{
 			int Slot = FindClientByAddress(Addr, Port);
@@ -380,6 +386,9 @@ void setup()
 	pinMode(RGB_BUILTIN, OUTPUT);
 	pinMode(BUTTON_BOOT, INPUT_PULLUP);
 
+	temperature_sensor_install(&TempSensorConfig, &TempSensor);
+	temperature_sensor_enable(TempSensor);
+
 	neopixelWrite(RGB_BUILTIN, 1, 0, 0);
 
 	Serial.println("Starting ESP32-S3 UDP Server");
@@ -404,6 +413,12 @@ void loop()
 
 	if(PacketSize > 0)
 	{
+		if(PacketSize > 1400)
+		{
+			// drop big packet
+			Udp.flush();
+			return;
+		}
 		IPAddress RemoteIP = Udp.remoteIP();
 		uint16_t RemotePort = Udp.remotePort();
 		Serial.print("Received packet from ");
@@ -417,11 +432,13 @@ void loop()
 	}
 
 	// handle not acked clients
-	for(int i = 0; i < MAX_CLIENTS; i++)
+	if(millis() - LastNotAckedCheck > 5000)
 	{
-		if(!Clients[i].Free && (millis() - Clients[i].LastAcked > 10000))
+		LastNotAckedCheck = millis();
+		for(int i = 0; i < MAX_CLIENTS; i++)
 		{
-			ClearSlot(i);
+			if(!Clients[i].Free && (millis() - Clients[i].LastAcked > 10000))
+				ClearSlot(i);
 		}
 	}
 }

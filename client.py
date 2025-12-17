@@ -16,11 +16,23 @@ C_SAY = 4
 S_CHAT = 5
 C_DISCONNECT = 6
 S_DISCONNECT = 7
+C_TEMP = 8
+S_TEMP = 9
 
 STATE_OFFLINE = 0
 STATE_ONLINE = 1
 
-name = "neyxezz"
+args = sys.argv
+if len(args) > 1:
+	name = " ".join(sys.argv[1:])
+else:
+	name = "neyxezz"
+
+def printinfo(text):
+	print(f"\r\033[K{text}")
+
+def printpadd(text):
+	print(f"\r\033[K{text}\n> ", end="")
 
 class MsgPacker:
 	def __init__(self, msg, buffer_size=1400):
@@ -144,7 +156,6 @@ class Client:
 		print("disconnecting...")
 		self.send_control(C_DISCONNECT)
 		self.receiving = False
-		sys.exit(0)
 
 	def task(self):
 		while self.receiving:
@@ -154,6 +165,10 @@ class Client:
 				if cmd == "exit":
 					self.send_control(C_DISCONNECT)
 					self.receiving = False
+				elif cmd == "temp":
+					self.send_control(C_TEMP)
+				elif cmd == "ping":
+					printpadd(f"Latency - {self.ping:.2f}ms")
 			elif user_input:
 				packer = MsgPacker(C_SAY)
 				packer.AddString(user_input)
@@ -189,21 +204,25 @@ class Client:
 
 				if msg == S_REPLY:
 					self.last_packet = time.time()
-					print(f"Latency - {(time.time() - self.last_ping)*1000:.2f}ms")
+					self.ping = (time.time() - self.last_ping) * 1000
 
 				if msg == S_CHAT:
 					Sys = unpacker.UnpackInt()
 					if Sys:
 						message = unpacker.UnpackString()
-						print(f"*** {message}")
+						printpadd(f"*** {message}")
 					else:
 						name = unpacker.UnpackString()
 						message = unpacker.UnpackString()
-						print(f"{name}: {message}")
+						printpadd(f"{name}: {message}")
+
+				if msg == S_TEMP:
+					value = unpacker.UnpackInt() / 100 # dequantize
+					printpadd(f"*** {value} ℃")
 
 				if msg == S_DISCONNECT:
 					reason = unpacker.UnpackString()
-					print(f"disconnected. reason: {reason}")
+					printinfo(f"disconnected. reason: {reason}")
 					self.STATE = STATE_OFFLINE
 					self.receiving = False
 					self.sock.close()
